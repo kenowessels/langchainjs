@@ -9,9 +9,12 @@ import {
   type JsonSchema7Type,
 } from "@langchain/core/utils/json_schema";
 import { OpenAPISpec } from "../../../util/openapi.js";
-import { convertOpenAPISchemaToJSONSchema } from "../openapi.js";
+import {
+  convertOpenAPISchemaToJSONSchema,
+  convertOpenAPIParamsToJSONSchema,
+} from "../openapi.js";
 
-test("Test convert OpenAPI params to JSON Schema", async () => {
+test("Test convert OpenAPI schema to JSON Schema", async () => {
   const spec = new OpenAPISpec({
     openapi: "3.1.0",
     info: {
@@ -267,4 +270,93 @@ test("Test convert OpenAPI params to JSON Schema", async () => {
       ).properties.nestedObject
     ).properties.inception
   );
+});
+
+test("Test convert OpenAPI params to JSON Schema with new features", async () => {
+  const spec = new OpenAPISpec({
+    openapi: "3.1.0",
+    info: {
+      title: "A fake spec for testing",
+      version: "0.0.1",
+    },
+    paths: {
+      "/widgets": {
+        post: {
+          operationId: "createWidget",
+          description: "Create a widget",
+          parameters: [
+            {
+              name: "paramWithDescription",
+              in: "query",
+              description: "This is a description",
+              schema: {
+                type: "string",
+              },
+            },
+            {
+              name: "paramWithEnum",
+              in: "query",
+              schema: {
+                type: "string",
+                enum: ["a", "b", "c"],
+              },
+            },
+            {
+              name: "paramWithAnyOf",
+              in: "query",
+              schema: {
+                anyOf: [{ type: "string" }, { type: "number" }],
+              },
+            },
+            {
+              name: "paramWithArrayOfAnyOf",
+              in: "query",
+              schema: {
+                type: "array",
+                items: {
+                  anyOf: [{ type: "string" }, { type: "integer" }],
+                },
+              },
+            },
+          ],
+          responses: {
+            "200": {
+              description: "OK",
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const operation = spec.getOperation("/widgets", OpenAPIV3.HttpMethods.POST);
+  if (!operation) {
+    throw new Error("Operation not found");
+  }
+
+  const jsonSchema = convertOpenAPIParamsToJSONSchema(
+    spec.getParametersForOperation(operation),
+    spec
+  );
+
+  // Test for description
+  expect(jsonSchema.properties.paramWithDescription.description).toBe(
+    "This is a description"
+  );
+
+  // Test for enum
+  expect(jsonSchema.properties.paramWithEnum.enum).toEqual(["a", "b", "c"]);
+
+  // Test for anyOf
+  expect(jsonSchema.properties.paramWithAnyOf.anyOf).toHaveLength(2);
+  expect(jsonSchema.properties.paramWithAnyOf.anyOf[0].type).toBe("string");
+  expect(jsonSchema.properties.paramWithAnyOf.anyOf[1].type).toBe("number");
+
+  // Test for anyOf in array
+  const arrayItems = (
+    jsonSchema.properties.paramWithArrayOfAnyOf as JsonSchema7ArrayType
+  ).items as JsonSchema7Type;
+  expect(arrayItems.anyOf).toHaveLength(2);
+  expect(arrayItems.anyOf[0].type).toBe("string");
+  expect(arrayItems.anyOf[1].type).toBe("integer");
 });

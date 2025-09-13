@@ -102,51 +102,42 @@ function formatURL(url: string, pathParams: Record<string, string>): string {
  * @param spec The OpenAPI specification that contains the parameters.
  * @returns The JSON schema representation of the OpenAPI parameters.
  */
-function convertOpenAPIParamsToJSONSchema(
+export function convertOpenAPIParamsToJSONSchema(
   params: OpenAPIV3_1.ParameterObject[],
   spec: OpenAPISpec
 ) {
-  return params.reduce(
-    (jsonSchema: JsonSchema7ObjectType, param) => {
-      let schema;
-      if (param.schema) {
-        schema = spec.getSchema(param.schema);
-        // eslint-disable-next-line no-param-reassign
-        jsonSchema.properties[param.name] = convertOpenAPISchemaToJSONSchema(
-          schema,
-          spec
-        );
-      } else if (param.content) {
-        const mediaTypeSchema = Object.values(param.content)[0].schema;
-        if (mediaTypeSchema) {
-          schema = spec.getSchema(mediaTypeSchema);
-        }
-        if (!schema) {
-          return jsonSchema;
-        }
-        if (schema.description === undefined) {
-          schema.description = param.description ?? "";
-        }
-        // eslint-disable-next-line no-param-reassign
-        jsonSchema.properties[param.name] = convertOpenAPISchemaToJSONSchema(
-          schema,
-          spec
-        );
-      } else {
-        return jsonSchema;
+  const jsonSchema: JsonSchema7ObjectType = {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: {},
+  };
+  for (const param of params) {
+    let schema;
+    if (param.schema) {
+      schema = spec.getSchema(param.schema);
+    } else if (param.content) {
+      const mediaTypeSchema = Object.values(param.content)[0].schema;
+      if (mediaTypeSchema) {
+        schema = spec.getSchema(mediaTypeSchema);
       }
-      if (param.required && Array.isArray(jsonSchema.required)) {
-        jsonSchema.required.push(param.name);
-      }
-      return jsonSchema;
-    },
-    {
-      type: "object",
-      properties: {},
-      required: [],
-      additionalProperties: {},
     }
-  );
+    if (!schema) {
+      continue;
+    }
+    const paramSchema = convertOpenAPISchemaToJSONSchema(schema, spec);
+    if (param.description) {
+      paramSchema.description = param.description;
+    }
+    jsonSchema.properties[param.name] = paramSchema;
+    if (param.required) {
+      if (!jsonSchema.required) {
+        jsonSchema.required = [];
+      }
+      jsonSchema.required.push(param.name);
+    }
+  }
+  return jsonSchema;
 }
 
 // OpenAI throws errors on extraneous schema properties, e.g. if "required" is set on individual ones
@@ -160,49 +151,55 @@ export function convertOpenAPISchemaToJSONSchema(
   schema: OpenAPIV3_1.SchemaObject,
   spec: OpenAPISpec
 ): JsonSchema7Type {
-  if (schema.type === "object") {
-    return Object.keys(schema.properties ?? {}).reduce(
-      (jsonSchema: JsonSchema7ObjectType, propertyName) => {
-        if (!schema.properties) {
-          return jsonSchema;
-        }
-        const openAPIProperty = spec.getSchema(schema.properties[propertyName]);
-        if (openAPIProperty.type === undefined) {
-          return jsonSchema;
-        }
-        // eslint-disable-next-line no-param-reassign
+  const jsonSchema: Partial<JsonSchema7Type> = {};
+  if (schema.description) {
+    jsonSchema.description = schema.description;
+  }
+  if (schema.enum) {
+    jsonSchema.enum = schema.enum;
+  }
+
+  if (schema.anyOf) {
+    jsonSchema.anyOf = schema.anyOf.map((s) =>
+      convertOpenAPISchemaToJSONSchema(spec.getSchema(s), spec)
+    );
+  } else if (schema.type === "object") {
+    jsonSchema.type = "object";
+    jsonSchema.properties = {};
+    if (schema.properties) {
+      for (const [propertyName, propertySchema] of Object.entries(
+        schema.properties
+      )) {
         jsonSchema.properties[propertyName] = convertOpenAPISchemaToJSONSchema(
-          openAPIProperty,
+          spec.getSchema(propertySchema),
           spec
         );
-        if (
-          (openAPIProperty.required ||
-            schema.required?.includes(propertyName)) &&
-          jsonSchema.required !== undefined
-        ) {
-          jsonSchema.required.push(propertyName);
-        }
-        return jsonSchema;
-      },
-      {
-        type: "object",
-        properties: {},
-        required: [],
-        additionalProperties: {},
       }
-    );
+    }
+    if (schema.required) {
+      jsonSchema.required = schema.required;
+    }
+    jsonSchema.additionalProperties = {}; // Keep original behavior
+  } else if (schema.type === "array") {
+    jsonSchema.type = "array";
+    if (schema.items) {
+      jsonSchema.items = convertOpenAPISchemaToJSONSchema(
+        spec.getSchema(schema.items),
+        spec
+      );
+    }
+    if (schema.minItems !== undefined) {
+      jsonSchema.minItems = schema.minItems;
+    }
+    if (schema.maxItems !== undefined) {
+      jsonSchema.maxItems = schema.maxItems;
+    }
+  } else {
+    jsonSchema.type = schema.type ?? "string";
   }
-  if (schema.type === "array") {
-    return {
-      type: "array",
-      items: convertOpenAPISchemaToJSONSchema(schema.items ?? {}, spec),
-      minItems: schema.minItems,
-      maxItems: schema.maxItems,
-    } as JsonSchema7ArrayType;
-  }
-  return {
-    type: schema.type ?? "string",
-  } as JsonSchema7Type;
+
+  // Cast to JsonSchema7Type, assuming the logic correctly constructs a valid schema.
+  return jsonSchema as JsonSchema7Type;
 }
 
 /**
